@@ -1,0 +1,72 @@
+rules_version = '2';
+// Access rules for Gym Buddy. Paste into Firebase console → Firestore Database → Rules → Publish.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null; }
+    function me() { return request.auth.uid; }
+    function isAdmin() {
+      return signedIn() && request.auth.token.email_verified == true
+        && request.auth.token.email.lower() in ['nishkarshgulati@gmail.com'];
+    }
+    function userData(u) { return get(/databases/$(database)/documents/users/$(u)).data; }
+    function myCircle() { return userData(me()).get('circle', ''); }
+    function amTrainer() { return signedIn() && userData(me()).get('role', 'member') == 'trainer'; }
+    function isTrainerOf(u) { return signedIn() && userData(u).get('trainerId', '') == me(); }
+    function sameCircle(u) { return signedIn() && myCircle() != '' && userData(u).get('circle', '') == myCircle(); }
+
+    // A trainer link must come from a real trainer code; a group must exist.
+    function linksOk(d, prevTrainer, prevCircle) {
+      return (d.get('trainerId', '') == '' || d.get('trainerId', '') == prevTrainer
+               || (d.get('trainerCode', '') != ''
+                   && get(/databases/$(database)/documents/codes/$(d.trainerCode)).data.trainerId == d.trainerId))
+        && (d.get('circle', '') == '' || d.get('circle', '') == prevCircle
+               || exists(/databases/$(database)/documents/circles/$(d.circle)));
+    }
+
+    match /users/{u} {
+      allow get: if signedIn() && (
+        u == me() || isAdmin()
+        || resource.data.get('trainerId', '') == me()
+        || resource.data.get('role', 'member') == 'trainer'
+        || (myCircle() != '' && resource.data.get('circle', '') == myCircle()));
+      allow list: if signedIn() && (
+        isAdmin()
+        || resource.data.trainerId == me()
+        || (myCircle() != '' && resource.data.circle == myCircle()));
+      allow create: if signedIn() && u == me()
+        && request.resource.data.role == 'member'
+        && linksOk(request.resource.data, '', '');
+      allow update: if signedIn() && (
+        // yourself: anything except your role
+        (u == me()
+          && request.resource.data.get('role', 'member') == resource.data.get('role', 'member')
+          && linksOk(request.resource.data, resource.data.get('trainerId', ''), resource.data.get('circle', '')))
+        // your trainer: only the plan fields
+        || (resource.data.get('trainerId', '') == me() && amTrainer()
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['schedule', 'sets', 'counts', 'planNote', 'updatedAt']))
+        || isAdmin());
+      allow delete: if isAdmin();
+
+      match /logs/{day} {
+        allow read: if signedIn() && (u == me() || isTrainerOf(u) || sameCircle(u) || isAdmin());
+        allow write: if signedIn() && (u == me() || (isTrainerOf(u) && amTrainer()));
+      }
+      match /meta/{doc} {
+        allow read: if signedIn() && (u == me() || isTrainerOf(u) || isAdmin());
+        allow write: if signedIn() && (u == me() || (isTrainerOf(u) && amTrainer()));
+      }
+    }
+
+    match /codes/{code} {
+      allow get: if signedIn();
+      allow create: if amTrainer() && request.resource.data.trainerId == me();
+      allow delete: if signedIn() && resource.data.trainerId == me();
+    }
+
+    match /circles/{code} {
+      allow get: if signedIn();
+      allow create: if signedIn() && request.resource.data.owner == me();
+    }
+  }
+}
