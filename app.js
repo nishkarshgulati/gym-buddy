@@ -368,7 +368,7 @@
       unsub('trainer'); S.src.trainer = {}; S.curTrainer = tid;
       if (tid) sub('trainer', () => Store().watchDoc(`users/${tid}`, (td) => { S.src.trainer = td ? { [tid]: clone(td) } : {}; recompose(); requestRender(); }, onErr('trainer')));
     }
-    if (S.isAdmin) sub('all', () => Store().watchCol('users', [], (list) => { S.src.all = toMap(list); recompose(); requestRender(); }, onErr('admin')));
+    if (S.isAdmin) sub('all', () => Store().watchCol('users', [], (list) => { S.src.all = toMap(list); recompose(); syncLogSubs('a:', Object.keys(S.src.all)); requestRender(); }, onErr('admin')));
     requestRender();
   }
   function startSession(user) {
@@ -413,6 +413,7 @@
     report: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19h16M7 16V11M12 16V6M17 16v-7"/></svg>',
     me: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="8.5" r="3.8"/><path d="M4.5 20a7.5 7.5 0 0 1 15 0"/></svg>',
     clients: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="9" cy="8.5" r="3.3"/><path d="M3 19.5a6 6 0 0 1 12 0M15.5 5.5a3.2 3.2 0 0 1 0 6.2M17.5 14a6 6 0 0 1 3.5 5.5"/></svg>',
+    admin: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7.5 3v5.5c0 4.5-3.2 8-7.5 9.5-4.3-1.5-7.5-5-7.5-9.5V6L12 3z"/><path d="M9 12.5l2 2 4-4.5"/></svg>',
     check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>',
     back: '<svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg>',
     next: '<svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5l7 7-7 7"/></svg>',
@@ -423,8 +424,10 @@
   const thumb = (ex) => thumbCache[ex.id] || (thumbCache[ex.id] = FIG.svgStatic(ex, 'B'));
   function tabsFor() {
     if (coaching()) return [['today', 'Session'], ['plan', 'Plan'], ['report', 'Report'], ['clients', 'Clients']];
-    if (isTrainer()) return [['clients', 'Clients'], ['today', 'Today'], ['plan', 'Plan'], ['compete', 'Compete'], ['records', 'Records'], ['me', 'Me']];
-    return [['today', 'Today'], ['plan', 'Plan'], ['compete', 'Compete'], ['records', 'Progress'], ['me', 'Me']];
+    let t = isTrainer() ? [['clients', 'Clients'], ['today', 'Today'], ['plan', 'Plan'], ['compete', 'Compete'], ['records', 'Records'], ['me', 'Me']]
+      : [['today', 'Today'], ['plan', 'Plan'], ['compete', 'Compete'], ['records', 'Progress'], ['me', 'Me']];
+    if (S.isAdmin) { t.splice(t.length - 1, 0, ['admin', 'Admin']); if (t.length > 6) t = t.filter((x) => x[0] !== 'records'); }
+    return t;
   }
 
   function splash(msg) {
@@ -442,8 +445,8 @@
     const tabs = tabsFor();
     if (!tabs.some((t) => t[0] === S.tab)) S.tab = tabs[0][0];
     const tab = S.tab;
-    const titles = { today: coaching() ? 'Session' : 'Today', plan: 'Weekly plan', compete: 'Compete', records: 'Progress', report: 'Report', me: 'Me', clients: 'Clients' };
-    const body = tab === 'plan' ? viewPlan() : tab === 'compete' ? viewCompete() : tab === 'records' ? viewRecords() : tab === 'report' ? viewReport(S.act) : tab === 'me' ? viewMe() : tab === 'clients' ? viewClients() : viewToday();
+    const titles = { today: coaching() ? 'Session' : 'Today', plan: 'Weekly plan', compete: 'Compete', records: 'Progress', report: 'Report', me: 'Me', clients: 'Clients', admin: 'Admin' };
+    const body = tab === 'admin' ? viewAdminDash() : tab === 'plan' ? viewPlan() : tab === 'compete' ? viewCompete() : tab === 'records' ? viewRecords() : tab === 'report' ? viewReport(S.act) : tab === 'me' ? viewMe() : tab === 'clients' ? viewClients() : viewToday();
     const banner = coaching() ? `<div class="coachbar glass"><div class="row" style="gap:8px">${avatar(P(S.act))}<div><div class="tiny muted">Coaching</div><b>${esc(P(S.act).name)}</b></div></div><button class="btn sm" data-act="exitCoach">Done</button></div>` : '';
     root.innerHTML = `<div class="app">
       <header class="top"><div class="brand"><small>${esc(APP_NAME)}</small><b>${titles[tab]}</b></div>
@@ -918,9 +921,118 @@
     if (p.trainerId) h += `<p class="small muted">Set by your trainer.</p><div class="glass card">${schedList(p, 'me', true)}</div></div>`;
     else h += `<p class="small muted">Pick what you train each day. Each muscle group includes one exercise for every part of that muscle, heaviest main lift first.</p><div class="glass card">${schedList(p, 'me')}</div><button class="btn sm ghost" data-act="useRec" style="align-self:flex-start">Reset to recommended 5-day plan</button></div>`;
     h += `<div class="sect"><h2>Settings</h2><div class="glass card stack"><div class="row between"><span>Weight units</span><div class="seg" style="width:140px"><button class="${unit() === 'kg' ? 'on' : ''}" data-act="unit" data-u="kg">kg</button><button class="${unit() === 'lb' ? 'on' : ''}" data-act="unit" data-u="lb">lb</button></div></div><div class="row between"><span>Beep when rest is over</span><div class="seg" style="width:140px"><button class="${S.sound ? 'on' : ''}" data-act="sound" data-v="1">On</button><button class="${!S.sound ? 'on' : ''}" data-act="sound" data-v="0">Off</button></div></div>${!isTrainer() ? (p.wantsTrainer ? '<p class="small muted">Trainer access requested. The admin will approve it.</p>' : '<button class="btn sm ghost" data-act="askTrainer" style="align-self:flex-start">I\'m a trainer: request trainer access</button>') : ''}<button class="btn sm" data-act="signOut" style="align-self:flex-start">Sign out</button></div></div>`;
-    if (S.isAdmin) h += viewAdmin();
+    if (S.isAdmin) h += `<div class="sect"><div class="glass card row between"><div><b>Admin dashboard</b><div class="small muted">Users, activity, trainers and approvals</div></div><button class="btn sm teal" data-act="tab" data-tab="admin">Open</button></div></div>`;
     h += `<div class="sect"><h2>Put it on your home screen</h2><div class="glass card stack small"><p><b>iPhone:</b> open in Safari, tap Share, then <b>Add to Home Screen</b>.</p><p><b>Android:</b> open in Chrome, tap ⋮, then <b>Add to Home screen</b> (or <b>Install app</b>).</p></div></div>`;
     h += `<p class="small faint" style="margin:18px 2px">Check with your doctor before starting a new training plan. Stop any exercise that causes sharp pain, dizziness or chest discomfort.</p>`;
+    return h;
+  }
+  // ---------- ADMIN DASHBOARD ----------
+  const relDay = (d) => { if (!d) return 'never'; const n = daysBetween(d, todayISO()); return n === 0 ? 'today' : n === 1 ? 'yesterday' : n + ' days ago'; };
+  function barChart(days, vals, color, unitLbl) {
+    const W = 336, H = 132, padL = 22, padB = 20, padT = 14, n = days.length;
+    const max = Math.max(1, ...vals), bw = (W - padL - 4) / n, g = 2;
+    const y = (v) => H - padB - (v / max) * (H - padB - padT);
+    let o = `<svg viewBox="0 0 ${W} ${H}" class="achart" role="img" aria-label="${esc(unitLbl)} per day, last ${n} days">`;
+    o += `<line x1="${padL}" x2="${W}" y1="${y(max)}" y2="${y(max)}" class="agrid"/><line x1="${padL}" x2="${W}" y1="${H - padB}" y2="${H - padB}" class="abase"/>`;
+    o += `<text x="${padL - 4}" y="${y(max) + 4}" class="atick" text-anchor="end">${max}</text><text x="${padL - 4}" y="${H - padB + 4}" class="atick" text-anchor="end">0</text>`;
+    const maxI = vals.lastIndexOf(max);
+    days.forEach((d, i) => {
+      const x = padL + i * bw + g / 2, w = Math.max(2, bw - g), v = vals[i], top = y(v), h = H - padB - top;
+      const r = Math.min(4, w / 2, h);
+      const path = v > 0 ? `M${x} ${H - padB}V${top + r}Q${x} ${top} ${x + r} ${top}H${x + w - r}Q${x + w} ${top} ${x + w} ${top + r}V${H - padB}Z` : '';
+      const tip = `${fmtDay(d, { weekday: 'short', day: 'numeric', month: 'short' })}: ${v} ${unitLbl}`;
+      o += `<g data-tip="${esc(tip)}"><rect x="${padL + i * bw}" y="${padT}" width="${bw}" height="${H - padT - padB}" fill="transparent"/>${path ? `<path d="${path}" fill="${color}"/>` : ''}</g>`;
+      if ((i === maxI || i === n - 1) && v > 0) o += `<text x="${x + w / 2}" y="${top - 4}" class="aval" text-anchor="middle">${v}</text>`;
+      if (i % 2 === (n - 1) % 2) o += `<text x="${x + w / 2}" y="${H - 5}" class="atick" text-anchor="middle">${parseD(d).getDate()}</text>`;
+    });
+    return o + '</svg>';
+  }
+  function adminData() {
+    const t = todayISO(), st = stats();
+    const all = Object.keys(S.src.all).map((u) => [u, S.users[u] || S.src.all[u]]).filter((x) => x[1]);
+    const logsBy = {}; Object.values(S.logs).forEach((l) => { (logsBy[l.pid] = logsBy[l.pid] || []).push(l); });
+    const active = (u, d) => { const i = st.byLog[lid(u, d)]; return !!(i && (i.sets > 0 || i.cardioDone)); };
+    const info = {};
+    all.forEach(([u, d]) => {
+      let last = '', s7 = 0, sets7 = 0, total = 0, pain = [];
+      (logsBy[u] || []).forEach((l) => {
+        if (l.date > t) return;
+        const i = st.byLog[lid(u, l.date)]; if (!i) return;
+        if (i.sets > 0 || i.cardioDone) { if (l.date > last) last = l.date; }
+        if (i.done) total++;
+        if (l.date >= addDays(t, -6)) { if (i.done) s7++; sets7 += i.sets; Object.values(l.ex || {}).forEach((en) => { if (en.pain) pain.push({ date: l.date, ex: EX[en.id], note: en.note }); }); }
+      });
+      info[u] = { last, s7, sets7, total, pain, streak: st.streak[u] || 0 };
+    });
+    const days = Array.from({ length: 14 }, (_, i) => addDays(t, i - 13));
+    const dau = days.map((d) => all.filter(([u]) => active(u, d)).length);
+    const sess = days.map((d) => all.filter(([u]) => { const i = st.byLog[lid(u, d)]; return i && i.done; }).length);
+    const exCount = {};
+    Object.values(S.logs).forEach((l) => { if (l.date < addDays(t, -29) || l.date > t) return; Object.values(l.ex || {}).forEach((en) => { const n = (en.sets || []).filter((x) => x && x.d).length; if (n && EX[en.id]) exCount[en.id] = (exCount[en.id] || 0) + n; }); });
+    return { t, all, info, days, dau, sess, exCount };
+  }
+  function adminUserRows(D) {
+    const q = (S.adminQ || '').toLowerCase();
+    const rows = D.all.filter(([, d]) => !q || (d.name || '').toLowerCase().includes(q) || (d.email || '').toLowerCase().includes(q))
+      .sort((a, b) => (D.info[b[0]].last || '').localeCompare(D.info[a[0]].last || '') || (a[1].name || '').localeCompare(b[1].name || ''));
+    if (!rows.length) return '<p class="small muted" style="padding:12px">No users match.</p>';
+    return `<div class="atable"><div class="atr ath"><span>User</span><span>Last active</span><span>7-day</span><span>Total</span></div>${rows.map(([u, d]) => {
+      const i = D.info[u]; const role = d.role === 'trainer' ? 'Trainer' : d.trainerId ? 'Trainee' : 'Member';
+      const tr = d.trainerId && S.users[d.trainerId] ? ' · ' + S.users[d.trainerId].name : '';
+      return `<button class="atr" data-act="adminUser" data-u="${u}"><span class="row" style="gap:8px;min-width:0">${avatar(d)}<span style="min-width:0"><b>${esc(d.name || '—')}</b><span class="small muted ellip">${esc(role + tr)} · ${esc(d.email || '')}</span></span></span><span class="small ${i.last === D.t ? 'good' : !i.last || daysBetween(i.last, D.t) > 6 ? 'warn' : ''}">${relDay(i.last)}</span><span class="num">${i.s7}<small> sess</small></span><span class="num">${i.total}</span></button>`;
+    }).join('')}</div>`;
+  }
+  function viewAdminUser(u) {
+    const d = S.users[u] || S.src.all[u]; if (!d) { S.adminUser = null; return viewAdminDash(); }
+    const D = adminData(), i = D.info[u];
+    const tr = d.trainerId && S.users[d.trainerId];
+    const recent = Object.values(S.logs).filter((l) => l.pid === u && l.date <= D.t && ((stats().byLog[lid(u, l.date)] || {}).sets > 0)).sort((a, b) => (a.date < b.date ? 1 : -1)).slice(0, 8);
+    let h = `<button class="btn sm ghost" data-act="adminBack" style="margin-bottom:8px">${ICON.back} All users</button>
+      <div class="glass card stack"><div class="row">${avatar(d, true)}<div style="min-width:0"><h2>${esc(d.name)}</h2><div class="small muted">${esc(d.email || '')}</div></div></div>
+      <div class="mini"><div><b>${relDay(i.last)}</b><span>Last active</span></div><div><b>${i.s7}</b><span>Sessions 7d</span></div><div><b>${i.total}</b><span>All sessions</span></div><div><b>${i.streak}</b><span>Streak</span></div></div>
+      <div class="small muted">${d.role === 'trainer' ? 'Trainer' : d.trainerId ? 'Trainee' : 'Member'}${tr ? ' · trainer: ' + esc(tr.name) : ''}${d.circle ? ' · group ' + esc(d.circle) : ''} · joined ${esc(d.created || '—')}</div></div>`;
+    h += `<div class="sect"><h2>Recent sessions</h2><div class="glass card">${recent.length ? `<div class="hist">${recent.map((l) => { const p = l.plan || planFor(u, l.date); const bi = stats().byLog[lid(u, l.date)]; return `<div><span>${fmtDay(l.date)}<br><span class="small muted">${esc(planTitle(p))}</span></span><span class="small">${bi.sets}/${bi.planned} sets · ${bi.pts} pts</span></div>`; }).join('')}</div>` : '<p class="small muted">No sessions logged yet.</p>'}</div></div>`;
+    h += `<div class="sect">${viewReport(u)}</div>`;
+    return h;
+  }
+  function viewAdminDash() {
+    if (!S.isAdmin) return '<div class="glass card empty">Admins only.</div>';
+    if (S.adminUser) return viewAdminUser(S.adminUser);
+    const D = adminData(), t = D.t, all = D.all, info = D.info;
+    const trainers = all.filter(([, d]) => d.role === 'trainer');
+    const trainees = all.filter(([, d]) => d.trainerId);
+    const newUsers = all.filter(([, d]) => (d.created || '') >= addDays(t, -6)).length;
+    const act7 = all.filter(([u]) => info[u].last && info[u].last >= addDays(t, -6)).length;
+    const sess7 = all.reduce((a, [u]) => a + info[u].s7, 0), sets7 = all.reduce((a, [u]) => a + info[u].sets7, 0);
+    const groups = new Set(all.map(([, d]) => d.circle).filter(Boolean)).size;
+    const reqs = all.filter(([, d]) => d.wantsTrainer && d.role !== 'trainer');
+    const pains = all.flatMap(([u, d]) => info[u].pain.map((p) => ({ u, d, p })));
+    const idle = all.filter(([u, d]) => (d.created || t) <= addDays(t, -7) && (!info[u].last || info[u].last < addDays(t, -6)));
+    const kpi = (v, l, sub) => `<div class="kpi glass"><b>${v}</b><span>${l}</span>${sub ? `<small>${sub}</small>` : ''}</div>`;
+    let h = `<div class="kpis">${kpi(all.length, 'Users', `+${newUsers} this week`)}${kpi(D.dau[13], 'Active today', `${act7} in 7 days`)}${kpi(sess7, 'Sessions', 'last 7 days')}${kpi(sets7, 'Sets logged', 'last 7 days')}${kpi(trainers.length, 'Trainers', `${trainees.length} trainees`)}${kpi(groups, 'Groups', 'family / friends')}</div>`;
+    h += `<div class="sect"><div class="glass card stack"><div class="sect-h"><h3>Active users per day</h3><span class="small muted">last 14 days</span></div>${barChart(D.days, D.dau, '#BF8520', 'active users')}</div>
+      <div class="glass card stack"><div class="sect-h"><h3>Workouts completed per day</h3><span class="small muted">last 14 days</span></div>${barChart(D.days, D.sess, '#1FA08E', 'workouts')}</div>
+      ${det('adTable', 'Numbers behind the charts', `<div class="hist">${D.days.slice().reverse().map((d, i) => `<div><span>${fmtDay(d)}</span><span class="small">${D.dau[13 - i]} active · ${D.sess[13 - i]} workouts</span></div>`).join('')}</div>`, false)}</div>`;
+    const attention = reqs.length + pains.length + idle.length;
+    h += `<div class="sect"><div class="sect-h"><h2>Needs attention</h2><span class="small ${attention ? 'warn' : 'muted'}">${attention ? attention + (attention === 1 ? ' item' : ' items') : 'All clear'}</span></div><div class="glass card stack">`;
+    if (!attention) h += '<p class="small muted">No trainer requests, pain reports or inactive users.</p>';
+    reqs.forEach(([u, d]) => { h += `<div class="row between"><div class="row">${avatar(d)}<div><b>${esc(d.name)}</b><div class="small muted">Wants trainer access · ${esc(d.email || '')}</div></div></div><button class="btn sm teal" data-act="setRole" data-u="${u}" data-r="trainer">Approve</button></div>`; });
+    pains.slice(0, 8).forEach(({ u, d, p }) => { const tr = d.trainerId && S.users[d.trainerId]; h += `<button class="row between" style="width:100%;text-align:left" data-act="adminUser" data-u="${u}"><div class="row">${avatar(d)}<div><b>${esc(d.name)}</b> <span class="flag bad">Pain</span><div class="small muted">${esc(p.ex ? p.ex.n : '')} · ${fmtDay(p.date)}${tr ? ' · trainer ' + esc(tr.name) : ''}${p.note ? ' · “' + esc(p.note) + '”' : ''}</div></div></div></button>`; });
+    idle.slice(0, 8).forEach(([u, d]) => { h += `<button class="row between" style="width:100%;text-align:left" data-act="adminUser" data-u="${u}"><div class="row">${avatar(d)}<div><b>${esc(d.name)}</b> <span class="flag warn">Inactive</span><div class="small muted">Last active ${relDay(info[u].last)} · joined ${esc(d.created || '')}</div></div></div></button>`; });
+    h += `</div></div>`;
+    h += `<div class="sect"><h2>Trainers</h2><div class="glass card">${trainers.length ? `<div class="atable"><div class="atr ath t4"><span>Trainer</span><span>Clients</span><span>Active 7d</span><span>Attend. 14d</span></div>${trainers.map(([u, d]) => {
+      const cl = all.filter(([, x]) => x.trainerId === u).map(([c]) => c);
+      const actC = cl.filter((c) => info[c].last && info[c].last >= addDays(t, -6)).length;
+      let pl = 0, dn = 0; cl.forEach((c) => { const a = attendance(c, 14); pl += a.planned; dn += a.done; });
+      return `<div class="atr t4"><span class="row" style="gap:8px">${avatar(d)}<span><b>${esc(d.name)}</b><span class="small muted ellip">code ${esc(d.inviteCode || '—')}</span></span></span><span class="num">${cl.length}</span><span class="num">${actC}</span><span class="num">${pl ? Math.round((dn / pl) * 100) + '%' : '—'}</span></div>`;
+    }).join('')}</div>` : '<p class="small muted">No trainers yet. Approve requests above, or open a user and make them a trainer.</p>'}</div></div>`;
+    const top = Object.entries(D.exCount).sort((a, b) => b[1] - a[1]).slice(0, 8);
+    if (top.length) {
+      const mx = top[0][1];
+      h += `<div class="sect"><div class="sect-h"><h2>Most logged exercises</h2><span class="small muted">sets, last 30 days</span></div><div class="glass card stack">${top.map(([id, n]) => `<div class="hbar" data-tip="${esc(EX[id].n)}: ${n} sets"><span class="small">${esc(EX[id].n)}</span><div class="hbar-t"><i style="width:${Math.max(3, Math.round((n / mx) * 100))}%"></i></div><b class="num">${n}</b></div>`).join('')}</div></div>`;
+    }
+    h += `<div class="sect"><div class="sect-h"><h2>All users</h2><span class="small muted">${all.length}</span></div><input class="inp" data-in="adminQ" placeholder="Search name or email" value="${esc(S.adminQ || '')}" autocomplete="off"><div class="glass card" id="adminUsers" style="padding:4px 6px">${adminUserRows(D)}</div></div>`;
+    h += `<p class="small faint" style="margin:14px 2px">Live: updates as people log. Only admins see this tab.</p>`;
     return h;
   }
   function viewAdmin() {
@@ -975,7 +1087,7 @@
   const ACT = {
     signIn() { Store().signIn().catch((e) => { console.warn(e); toast('Sign-in did not finish. Please try again.'); }); },
     signOut() { Store().signOut(); S.onb = null; },
-    tab(d) { S.tab = d.tab; if (!coaching()) LS.set('gb.tab', d.tab); S.editDay = null; render(); window.scrollTo(0, 0); },
+    tab(d) { if (d.tab === 'admin' && S.tab !== 'admin') S.adminUser = null; S.tab = d.tab; if (!coaching()) LS.set('gb.tab', d.tab); S.editDay = null; render(); window.scrollTo(0, 0); },
     day(d) { S.date = addDays(S.date, +d.d); render(); },
     goToday() { S.date = todayISO(); render(); },
     week(d) { S.planOff += +d.d; render(); },
@@ -1027,6 +1139,8 @@
     },
     ovClose() { $('#finish').hidden = true; },
     recTab(d) { S.recTab = d.t; render(); },
+    adminUser(d) { S.adminUser = d.u; S.tab = 'admin'; render(); window.scrollTo(0, 0); },
+    adminBack() { S.adminUser = null; render(); window.scrollTo(0, 0); },
     color(d) { saveUser(S.uid, { color: d.c }); render(); },
     unit(d) { saveUser(S.uid, { unit: d.u }); render(); },
     sound(d) { S.sound = d.v === '1'; LS.set('gb.sound', S.sound); if (S.sound) beep(); render(); },
@@ -1122,6 +1236,7 @@
     if (k === 'ocircle') { S.onb.circle = el.value.toUpperCase(); return; }
     if (k === 'owt') { S.onb.wantsTrainer = el.checked; return; }
     if (k === 'joinTrainer' || k === 'joinCircle') return;
+    if (k === 'adminQ') { S.adminQ = el.value; const box = $('#adminUsers'); if (box) box.innerHTML = adminUserRows(adminData()); return; }
     if (k === 'pname') { const v = el.value.slice(0, 24) || 'Me'; me().name = v; clearTimeout(noteT.p); noteT.p = setTimeout(() => saveUser(S.uid, { name: v }), 600); return; }
     if (k === 'clNote') { const v = el.value.slice(0, 300); P(S.act).planNote = v; clearTimeout(noteT.c); noteT.c = setTimeout(() => saveUser(S.act, { planNote: v }), 700); return; }
     const m = k.match(/^(me|o|cl)(Count|Sets|Cardio)$/);
@@ -1147,6 +1262,19 @@
   document.addEventListener('change', (e) => { const el = e.target; if (el.dataset && el.dataset.in === 'owt') S.onb.wantsTrainer = el.checked; });
   document.addEventListener('toggle', (e) => { const el = e.target; if (el && el.dataset && el.dataset.k) S.det[el.dataset.k] = el.open; }, true);
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && S.sheet) closeSheet(); });
+  // lightweight tooltip for charts ([data-tip])
+  const tipEl = document.createElement('div'); tipEl.className = 'atip'; tipEl.hidden = true; document.body.appendChild(tipEl);
+  const showTip = (e) => {
+    const t = e.target.closest && e.target.closest('[data-tip]');
+    if (!t) { tipEl.hidden = true; return; }
+    const pt = e.touches ? e.touches[0] : e;
+    tipEl.textContent = t.getAttribute('data-tip'); tipEl.hidden = false;
+    const x = Math.min(window.innerWidth - tipEl.offsetWidth - 8, Math.max(8, pt.clientX - tipEl.offsetWidth / 2));
+    tipEl.style.left = x + 'px'; tipEl.style.top = Math.max(8, pt.clientY - tipEl.offsetHeight - 12) + 'px';
+  };
+  document.addEventListener('mousemove', showTip);
+  document.addEventListener('touchstart', showTip, { passive: true });
+  document.addEventListener('scroll', () => { tipEl.hidden = true; }, { passive: true });
 
   // notes for a client load lazily while coaching
   setInterval(() => {

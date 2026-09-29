@@ -311,3 +311,32 @@ details.det[open] summary::after { transform: rotate(-135deg); margin-top: 4px; 
 .wkbar i.dn { background: var(--good); left: 20%; right: 20%; }
 .nav .in { grid-template-columns: repeat(5, 1fr); }
 input[type="checkbox"] { width: 20px; height: 20px; accent-color: var(--amber); }
+
+/* ---- admin dashboard ---- */
+.kpis { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.kpi { padding: 10px 12px; display: flex; flex-direction: column; gap: 1px; }
+.kpi b { font-family: var(--display); font-size: 28px; line-height: 1; font-variant-numeric: tabular-nums; }
+.kpi span { font-size: 12px; color: var(--muted); letter-spacing: 0.05em; text-transform: uppercase; }
+.kpi small { font-size: 12px; color: var(--faint); }
+.achart { width: 100%; height: auto; display: block; overflow: visible; }
+.achart .agrid { stroke: rgba(255, 255, 255, 0.07); stroke-width: 1; stroke-dasharray: 3 4; }
+.achart .abase { stroke: rgba(255, 255, 255, 0.16); stroke-width: 1; }
+.achart .atick { fill: var(--faint); font-size: 10px; font-family: var(--body); font-variant-numeric: tabular-nums; }
+.achart .aval { fill: var(--text); font-size: 11px; font-weight: 700; font-family: var(--body); }
+.achart g:hover path { opacity: 0.85; }
+.atip { position: fixed; z-index: 90; pointer-events: none; padding: 6px 10px; border-radius: 10px; background: rgba(20, 28, 36, 0.96); border: 1px solid var(--stroke2); font-size: 13px; color: var(--text); white-space: nowrap; }
+.atable { display: flex; flex-direction: column; }
+.atr { display: grid; grid-template-columns: minmax(0, 1fr) 76px 52px 44px; gap: 8px; align-items: center; padding: 9px 6px; border-top: 1px solid var(--stroke); text-align: left; width: 100%; }
+.atr.t4 { grid-template-columns: minmax(0, 1fr) 54px 60px 66px; }
+.atr.ath { border-top: 0; font-size: 11px; color: var(--muted); letter-spacing: 0.05em; text-transform: uppercase; padding-block: 6px; }
+.atr .num { text-align: right; font-size: 18px; }
+.atr .num small { font-size: 11px; color: var(--muted); font-family: var(--body); font-weight: 400; }
+.atr > span:nth-child(2) { text-align: right; }
+.ellip { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.good { color: var(--good); }
+.hbar { display: grid; grid-template-columns: minmax(0, 1.2fr) 1fr 34px; gap: 8px; align-items: center; }
+.hbar .small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hbar-t { height: 8px; border-radius: 999px; background: rgba(255, 255, 255, 0.06); overflow: hidden; }
+.hbar-t i { display: block; height: 100%; border-radius: 999px; background: #1FA08E; }
+.hbar .num { text-align: right; }
+@media (max-width: 380px) { .kpis { grid-template-columns: repeat(2, 1fr); } .atr { grid-template-columns: minmax(0, 1fr) 70px 46px 36px; } }
