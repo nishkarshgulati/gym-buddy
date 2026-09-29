@@ -307,7 +307,50 @@
     S.users = Object.assign({}, src.all, src.circle, src.clients, src.trainer, src.me, keepMine);
     markChanged();
   }
-  function toMap(list) { const m = {}; list.forEach((d) => { m[d.id] = clone(d.data); }); return m; }
+  function toMap(list) { const m = {}; list.forEach((d) => { m[d.id] = cleanUser(d.data); }); return m; }
+  // ---------- inbound data hygiene: other people's documents are never trusted as-is ----------
+  const HEX = /^#[0-9a-fA-F]{6}$/, CODE6 = /^[A-Z0-9]{6}$/, ISO = /^\d{4}-\d{2}-\d{2}$/;
+  const str = (v, n) => (typeof v === 'string' ? v : typeof v === 'number' ? String(v) : '').slice(0, n);
+  const num = (v, lo, hi) => { if (v == null || v === '' || typeof v === 'boolean') return null; const x = +v; return isFinite(x) ? Math.min(hi, Math.max(lo, x)) : null; };
+  const isObj = (o) => !!o && typeof o === 'object' && !Array.isArray(o);
+  const numMap = (o, keyOk, lo, hi) => { const r = {}; if (isObj(o)) Object.keys(o).forEach((k) => { const v = num(o[k], lo, hi); if (keyOk(k) && v != null) r[k] = v; }); return r; };
+  function cleanSchedule(sc) {
+    const r = {}; if (!isObj(sc)) return r;
+    DAYS.forEach((d) => { const x = sc[d]; if (!isObj(x)) return; r[d] = { groups: (Array.isArray(x.groups) ? x.groups : []).filter((g) => typeof g === 'string' && GROUPS[g]).slice(0, 10), cardio: num(x.cardio, 0, 120) || 0 }; if (typeof x.preset === 'string') r[d].preset = str(x.preset, 30); });
+    return r;
+  }
+  function cleanUser(d) {
+    d = isObj(d) ? clone(d) : {};
+    const o = Object.assign({}, d, {
+      name: str(d.name, 40) || 'Member', email: str(d.email, 120), color: HEX.test(d.color || '') ? d.color : '#888888',
+      role: d.role === 'trainer' ? 'trainer' : 'member', wantsTrainer: d.wantsTrainer === true, signup: d.signup === 'trainer' ? 'trainer' : 'member',
+      trainerId: str(d.trainerId, 128), trainerCode: CODE6.test(d.trainerCode || '') ? d.trainerCode : '', inviteCode: CODE6.test(d.inviteCode || '') ? d.inviteCode : '',
+      circle: CODE6.test(d.circle || '') ? d.circle : '', unit: d.unit === 'lb' ? 'lb' : 'kg', created: ISO.test(d.created || '') ? d.created : '', planNote: str(d.planNote, 400),
+      schedule: cleanSchedule(d.schedule), sets: numMap(d.sets, (g) => !!GROUPS[g], 1, 6), counts: numMap(d.counts, (g) => !!GROUPS[g], 1, 10), updatedAt: num(d.updatedAt, 0, 1e14) || 0,
+    });
+    return o;
+  }
+  function cleanPlan(p) {
+    if (!isObj(p)) return null;
+    const groups = (Array.isArray(p.groups) ? p.groups : []).filter((g) => typeof g === 'string' && GROUPS[g]).slice(0, 10);
+    const picks = {}; if (isObj(p.picks)) Object.keys(p.picks).forEach((k) => { if (k.length < 40 && typeof p.picks[k] === 'string' && EX[p.picks[k]]) picks[k] = p.picks[k]; });
+    return { groups, cardio: num(p.cardio, 0, 120) || 0, picks, sets: numMap(p.sets, (g) => !!GROUPS[g], 1, 8), counts: numMap(p.counts, (g) => !!GROUPS[g], 1, 10), cardioId: typeof p.cardioId === 'string' && EX[p.cardioId] ? p.cardioId : null };
+  }
+  const cleanNums = (o) => { const r = {}; if (isObj(o)) Object.keys(o).forEach((k) => { const v = o[k]; if (typeof v === 'boolean') r[k] = v; else if (v === null) r[k] = null; else if (typeof v === 'number' && isFinite(v)) r[k] = Math.min(1e6, Math.max(-1e6, v)); }); return r; };
+  function cleanLog(d) {
+    d = isObj(d) ? d : {};
+    const o = { week: ISO.test(d.week || '') ? d.week : '', finished: d.finished === true, published: d.published === true, publishedBy: str(d.publishedBy, 128), custom: d.custom === true, by: str(d.by, 128), updatedAt: num(d.updatedAt, 0, 1e14) || 0 };
+    const pl = cleanPlan(d.plan); if (pl) o.plan = pl;
+    o.swaps = {}; if (isObj(d.swaps)) Object.keys(d.swaps).forEach((k) => { if (k.length < 40 && typeof d.swaps[k] === 'string' && EX[d.swaps[k]]) o.swaps[k] = d.swaps[k]; });
+    o.cardio = { min: (isObj(d.cardio) && num(d.cardio.min, 0, 300)) || 0, d: !!(isObj(d.cardio) && d.cardio.d === true) };
+    o.ex = {}; if (isObj(d.ex)) Object.keys(d.ex).forEach((k) => {
+      const en = d.ex[k]; if (k.length >= 40 || !isObj(en) || typeof en.id !== 'string' || !EX[en.id]) return;
+      o.ex[k] = { id: en.id, sets: (Array.isArray(en.sets) ? en.sets : []).slice(0, 10).map((x) => { const c = cleanNums(x); c.d = c.d === true; if (c.w != null) c.w = num(c.w, 0, 1000); if (c.r != null) c.r = num(c.r, 0, 1000); return c; }), note: str(en.note, 500), pain: en.pain === true };
+      if (isObj(en.cur)) o.ex[k].cur = cleanNums(en.cur);
+    });
+    return o;
+  }
+  function cleanNotes(d) { const r = {}; if (isObj(d)) Object.keys(d).forEach((k) => { if (EX[k] && typeof d[k] === 'string') r[k] = d[k].slice(0, 500); }); return r; }
   function watchLogs(u) {
     return Store().watchCol(`users/${u}/logs`, [], (list) => applyLogs(u, list), onErr('logs'));
   }
@@ -322,7 +365,7 @@
     list.forEach((d) => {
       const k = lid(u, d.id);
       if (next[k] && busy(`users/${u}/logs/${d.id}`)) return;
-      const l = clone(d.data); l.pid = u; l.date = d.id; next[k] = l;
+      if (!ISO.test(d.id)) return; const l = cleanLog(d.data); l.pid = u; l.date = d.id; next[k] = l;
     });
     if (S.src.circle[u] && u !== S.uid) partnerPing(u, list);
     S.logs = next; markChanged();
@@ -346,6 +389,7 @@
   }
   function onMe(d) {
     const uid = S.uid;
+    if (d) d = cleanUser(d);
     if (!d) {
       if (busy(`users/${uid}`)) return;
       S.src.me = {}; recompose();
@@ -370,7 +414,7 @@
       unsub('circle'); syncLogSubs('c:', []); S.src.circle = {}; S.curCircle = circle; S.circleName = '';
       if (circle) {
         sub('circle', () => Store().watchCol('users', [['circle', '==', circle]], (list) => { S.src.circle = toMap(list); recompose(); syncLogSubs('c:', Object.keys(S.src.circle)); requestRender(); }, onErr('group')));
-        Store().get(`circles/${circle}`).then((c) => { S.circleName = (c && c.name) || ''; requestRender(); }).catch(() => {});
+        Store().get(`circles/${circle}`).then((c) => { S.circleName = str(c && c.name, 60); requestRender(); }).catch(() => {});
       }
     }
     // trainer: watch clients
@@ -381,7 +425,7 @@
     const tid = u.trainerId || null;
     if (tid !== S.curTrainer) {
       unsub('trainer'); S.src.trainer = {}; S.curTrainer = tid;
-      if (tid) sub('trainer', () => Store().watchDoc(`users/${tid}`, (td) => { S.src.trainer = td ? { [tid]: clone(td) } : {}; recompose(); requestRender(); }, onErr('trainer')));
+      if (tid) sub('trainer', () => Store().watchDoc(`users/${tid}`, (td) => { S.src.trainer = td ? { [tid]: cleanUser(td) } : {}; recompose(); requestRender(); }, onErr('trainer')));
     }
     if (S.isAdmin) sub('all', () => Store().watchCol('users', [], (list) => { S.src.all = toMap(list); recompose(); syncLogSubs('a:', Object.keys(S.src.all)); requestRender(); }, onErr('admin')));
     requestRender();
@@ -392,7 +436,7 @@
     render();
     sub('me', () => Store().watchDoc(`users/${user.uid}`, onMe, onErr('profile')));
     sub('mylogs', () => watchLogs(user.uid));
-    sub('mynotes', () => Store().watchDoc(`users/${user.uid}/meta/notes`, (d) => { if (!busy(`users/${user.uid}/meta/notes`)) { S.notes[user.uid] = d ? clone(d) : {}; requestRender(); } }, onErr('notes')));
+    sub('mynotes', () => Store().watchDoc(`users/${user.uid}/meta/notes`, (d) => { if (!busy(`users/${user.uid}/meta/notes`)) { S.notes[user.uid] = cleanNotes(d); requestRender(); } }, onErr('notes')));
   }
   function boot() {
     render();
@@ -1148,7 +1192,7 @@
     onbMember() { LS.set('gb.intent', ''); S.onb.wantsTrainer = false; render(); },
     notTrainer() { saveUser(S.uid, { wantsTrainer: false, signup: 'member' }); render(); },
     declineTrainer(d) { const u = d.u, f = { wantsTrainer: false, signup: 'member' }; [S.users[u], S.src.all[u]].forEach((x) => x && Object.assign(x, f)); queueWrite(`users/${u}`, Object.assign({ updatedAt: Date.now() }, f), true); toast('Request declined. They stay a member.'); render(); },
-    share(d) { const txt = d.k === 'trainer' ? `Hi! I've set up Gym Buddy for our gym. As a trainer you can plan your clients' workouts and track them. Sign in here with your Gmail: ${APP_URL}?trainer` : `Join me on Gym Buddy for your workout plans. Open ${APP_URL}?code=${me().inviteCode}, sign in with your Gmail and you'll be linked to me as your trainer (code ${me().inviteCode}).`; window.open('https://wa.me/?text=' + encodeURIComponent(txt), '_blank'); },
+    share(d) { const txt = d.k === 'trainer' ? `Hi! I've set up Gym Buddy for our gym. As a trainer you can plan your clients' workouts and track them. Sign in here with your Gmail: ${APP_URL}?trainer` : `Join me on Gym Buddy for your workout plans. Open ${APP_URL}?code=${me().inviteCode}, sign in with your Gmail and you'll be linked to me as your trainer (code ${me().inviteCode}).`; window.open('https://wa.me/?text=' + encodeURIComponent(txt), '_blank', 'noopener'); },
     copyLink(d) { const v = d.k === 'trainer' ? APP_URL + '?trainer' : `${APP_URL}?code=${me().inviteCode}`; try { navigator.clipboard.writeText(v).then(() => toast('Link copied'), () => toast(v)); } catch (e) { toast(v); } },
     tab(d) { if (d.tab === 'admin' && S.tab !== 'admin') S.adminUser = null; S.tab = d.tab; if (!coaching()) LS.set('gb.tab', d.tab); S.editDay = null; render(); window.scrollTo(0, 0); },
     day(d) { S.date = addDays(S.date, +d.d); render(); },
@@ -1344,7 +1388,7 @@
 
   // notes for a client load lazily while coaching
   setInterval(() => {
-    if (coaching() && !subs['n:' + S.act]) { const u = S.act; sub('n:' + u, () => Store().watchDoc(`users/${u}/meta/notes`, (d) => { if (!busy(`users/${u}/meta/notes`)) { S.notes[u] = d ? clone(d) : {}; } }, onErr('client notes'))); }
+    if (coaching() && !subs['n:' + S.act]) { const u = S.act; sub('n:' + u, () => Store().watchDoc(`users/${u}/meta/notes`, (d) => { if (!busy(`users/${u}/meta/notes`)) { S.notes[u] = cleanNotes(d); } }, onErr('client notes'))); }
   }, 1000);
 
   boot();
