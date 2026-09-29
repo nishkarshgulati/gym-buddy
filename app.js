@@ -6,7 +6,12 @@
   const COLORS = ['#F2B84B', '#5ED3C3', '#FF8A7A', '#B79CFF', '#7CC4FF', '#9BE36A'];
   const CFG = window.GB_CONFIG || {};
   const APP_NAME = CFG.appName || 'Gym Buddy';
-  const ADMINS = (CFG.admins || []).map((s) => String(s).toLowerCase());
+  const OWNER = 'nishkarshgulati@gmail.com'; // the only admin (also enforced in firestore.rules)
+  const QS = new URLSearchParams(location.search);
+  const APP_URL = location.origin + location.pathname;
+  // sign-in intent survives the Google redirect fallback
+  if (QS.has('trainer')) { try { localStorage.setItem('gb.link', JSON.stringify({ t: 1, at: Date.now() })); } catch (e) { /* ignore */ } }
+  if (QS.get('code')) { try { localStorage.setItem('gb.code', JSON.stringify(String(QS.get('code')).toUpperCase().slice(0, 6))); } catch (e) { /* ignore */ } }
   const LS = {
     get(k, d) { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
     set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { /* storage unavailable */ } },
@@ -47,6 +52,7 @@
   const me = () => S.users[S.uid];
   const coaching = () => S.act && S.act !== S.uid;
   const isTrainer = () => !!(me() && me().role === 'trainer');
+  const isPending = () => { const m = me(); return !!(m && m.signup === 'trainer' && m.wantsTrainer && m.role !== 'trainer' && !S.isAdmin); };
   const unit = () => (me() && me().unit) || 'kg';
   const toDisp = (kg) => (kg == null || kg === '' ? '' : unit() === 'lb' ? Math.round(kg * 2.20462 * 2) / 2 : Math.round(kg * 100) / 100);
   const fromDisp = (v) => (v === '' || v == null || isNaN(v) ? null : unit() === 'lb' ? Math.round((v / 2.20462) * 100) / 100 : +v);
@@ -347,8 +353,17 @@
     }
     if (!busy(`users/${uid}`)) S.src.me = { [uid]: clone(d) };
     recompose();
-    if (S.phase !== 'app') { S.phase = 'app'; S.act = uid; }
     const u = S.users[uid];
+    if (S.phase !== 'app') { S.phase = 'app'; S.act = uid; if (u.role === 'trainer') S.tab = 'clients'; }
+    else if (u.role === 'trainer' && S.wasTrainer === false) { S.tab = 'clients'; toast('Trainer access approved. Welcome!'); }
+    S.wasTrainer = u.role === 'trainer';
+    if (LS.get('gb.intent', '') === 'trainer') {
+      LS.set('gb.intent', '');
+      if (u.role !== 'trainer') {
+        if (S.isAdmin) ACT.setRole({ u: uid, r: 'trainer' });
+        else if (!u.wantsTrainer || u.signup !== 'trainer') saveUser(uid, { wantsTrainer: true, signup: 'trainer' });
+      }
+    }
     // group (family / friends) for competing
     const circle = u.circle || '';
     if (circle !== S.curCircle) {
@@ -373,7 +388,7 @@
   }
   function startSession(user) {
     unsubAll();
-    Object.assign(S, { user, uid: user.uid, act: user.uid, isAdmin: ADMINS.includes(String(user.email || '').toLowerCase()), users: {}, logs: {}, notes: {}, src: { me: {}, circle: {}, clients: {}, all: {}, trainer: {} }, curCircle: '', curTrainer: null, refreshed: false, phase: 'loading' });
+    Object.assign(S, { user, uid: user.uid, act: user.uid, isAdmin: String(user.email || '').toLowerCase() === OWNER, users: {}, logs: {}, notes: {}, src: { me: {}, circle: {}, clients: {}, all: {}, trainer: {} }, curCircle: '', curTrainer: null, refreshed: false, wasTrainer: undefined, phase: 'loading' });
     render();
     sub('me', () => Store().watchDoc(`users/${user.uid}`, onMe, onErr('profile')));
     sub('mylogs', () => watchLogs(user.uid));
@@ -424,7 +439,7 @@
   const thumb = (ex) => thumbCache[ex.id] || (thumbCache[ex.id] = FIG.svgStatic(ex, 'B'));
   function tabsFor() {
     if (coaching()) return [['today', 'Session'], ['plan', 'Plan'], ['report', 'Report'], ['clients', 'Clients']];
-    let t = isTrainer() ? [['clients', 'Clients'], ['today', 'Today'], ['plan', 'Plan'], ['compete', 'Compete'], ['records', 'Records'], ['me', 'Me']]
+    let t = isTrainer() ? [['clients', 'Dashboard'], ['today', 'Today'], ['plan', 'Plan'], ['compete', 'Compete'], ['records', 'Records'], ['me', 'Me']]
       : [['today', 'Today'], ['plan', 'Plan'], ['compete', 'Compete'], ['records', 'Progress'], ['me', 'Me']];
     if (S.isAdmin) { t.splice(t.length - 1, 0, ['admin', 'Admin']); if (t.length > 6) t = t.filter((x) => x[0] !== 'records'); }
     return t;
@@ -441,11 +456,12 @@
     if (S.phase === 'out') { root.innerHTML = `<div class="app">${viewLanding()}</div>`; renderSheet(); return; }
     if (S.phase === 'onboard') { root.innerHTML = `<div class="app">${viewOnboard()}</div>`; renderSheet(); return; }
     if (!me()) { root.innerHTML = splash('Loading your plan…'); return; }
+    if (isPending()) { root.innerHTML = `<div class="app">${viewPending()}</div>`; renderSheet(); return; }
     if (coaching() && !P(S.act)) S.act = S.uid;
     const tabs = tabsFor();
     if (!tabs.some((t) => t[0] === S.tab)) S.tab = tabs[0][0];
     const tab = S.tab;
-    const titles = { today: coaching() ? 'Session' : 'Today', plan: 'Weekly plan', compete: 'Compete', records: 'Progress', report: 'Report', me: 'Me', clients: 'Clients', admin: 'Admin' };
+    const titles = { today: coaching() ? 'Session' : 'Today', plan: 'Weekly plan', compete: 'Compete', records: 'Progress', report: 'Report', me: 'Me', clients: 'Trainer dashboard', admin: 'Admin' };
     const body = tab === 'admin' ? viewAdminDash() : tab === 'plan' ? viewPlan() : tab === 'compete' ? viewCompete() : tab === 'records' ? viewRecords() : tab === 'report' ? viewReport(S.act) : tab === 'me' ? viewMe() : tab === 'clients' ? viewClients() : viewToday();
     const banner = coaching() ? `<div class="coachbar glass"><div class="row" style="gap:8px">${avatar(P(S.act))}<div><div class="tiny muted">Coaching</div><b>${esc(P(S.act).name)}</b></div></div><button class="btn sm" data-act="exitCoach">Done</button></div>` : '';
     root.innerHTML = `<div class="app">
@@ -458,16 +474,33 @@
 
   // ---------- LANDING / ONBOARDING ----------
   function viewLanding() {
-    return `<header class="top"><div class="brand"><small>Welcome to</small><b>${esc(APP_NAME)}</b></div></header>
-      <section class="glass hero"><div><h1>Your gym plan, form guide and progress in one place</h1><p class="muted" style="margin-top:8px">Workouts planned weeks ahead, every muscle covered, heaviest lift first, form animations for every exercise, and progress reports. Train on your own, with family, or with your personal trainer.</p></div><div style="width:100px">${FIG.svgStatic(EX.bb_squat, 'B')}</div></section>
-      <div class="sect"><button class="btn gbtn block" data-act="signIn">${ICON.google}<span>Continue with Google</span></button><p class="small muted" style="text-align:center">Use your Gmail account. We only use your name and email to set up your profile.</p></div>
-      <div class="sect"><div class="glass card stack small"><div><b>Members</b> get a plan that rotates weekly, one-tap set logging and records.</div><div><b>Trainees</b> get plans from their trainer in advance and progress reports.</div><div><b>Trainers</b> plan for all clients in minutes and see who needs attention.</div></div></div>`;
+    const tl = LS.get('gb.link', null), trainerLink = !!(tl && Date.now() - tl.at < 864e5);
+    const hero = trainerLink
+      ? `<section class="glass hero"><div><h1>Trainer sign-in</h1><p class="muted" style="margin-top:8px">Plan workouts for all your clients weeks ahead, see who trained today, and spot pain reports and missed sessions at a glance.</p></div><div style="width:100px">${FIG.svgStatic(EX.bb_squat, 'B')}</div></section>`
+      : `<section class="glass hero"><div><h1>Your gym plan, form guide and progress in one place</h1><p class="muted" style="margin-top:8px">Workouts planned weeks ahead, every muscle covered, heaviest lift first, form animations for every exercise, and progress reports. Train on your own, with family, or with your personal trainer.</p></div><div style="width:100px">${FIG.svgStatic(EX.bb_squat, 'B')}</div></section>`;
+    const member = `<button class="btn gbtn block" data-act="signIn">${ICON.google}<span>Continue with Google</span></button>`;
+    const trainer = `<button class="btn gbtn block" data-act="signInTrainer">${ICON.google}<span>Trainer sign-in with Google</span></button>`;
+    const h = `<header class="top"><div class="brand"><small>Welcome to</small><b>${esc(APP_NAME)}</b></div></header>${hero}`;
+    if (trainerLink) return h + `<div class="sect">${trainer}<p class="small muted" style="text-align:center">Use your Gmail account. The admin approves new trainers, usually the same day.</p><button class="btn ghost block" data-act="memberLanding">Not a trainer? Member sign-in</button></div>`;
+    return h + `<div class="sect">${member}<p class="small muted" style="text-align:center">Use your Gmail account. We only use your name and email to set up your profile.</p></div>
+      <div class="sect"><div class="glass card stack"><div><b>Are you a trainer?</b><div class="small muted">Sign in here to get the trainer dashboard for your clients.</div></div>${trainer}</div></div>`;
+  }
+  function viewPending() {
+    const m = me();
+    return `<header class="top"><div class="brand"><small>${esc(APP_NAME)}</small><b>Trainer access</b></div></header>
+      <section class="glass card stack" style="text-align:center;align-items:center;padding:26px 18px"><div style="width:110px">${FIG.svgStatic(EX.db_shoulder_press, 'B')}</div><h2>Waiting for approval</h2><p class="muted">Thanks, ${esc(m.name)}. Your request is with the admin. Your trainer dashboard opens here by itself once you are approved. No need to refresh.</p><div class="small faint">${esc(S.user && S.user.email)}</div></section>
+      <div class="sect"><button class="btn ghost block" data-act="notTrainer">I'm not a trainer</button><button class="btn block" data-act="signOut">Sign out</button></div>`;
   }
   function viewOnboard() {
-    const o = S.onb || (S.onb = { name: (S.user && S.user.name) || '', color: COLORS[Math.floor(Math.random() * COLORS.length)], schedule: clone(RECOMMENDED), sets: {}, counts: {}, trainerCode: '', circle: '', wantsTrainer: false });
+    const o = S.onb || (S.onb = { name: (S.user && S.user.name) || '', color: COLORS[Math.floor(Math.random() * COLORS.length)], schedule: clone(RECOMMENDED), sets: {}, counts: {}, trainerCode: LS.get('gb.code', '') || '', circle: '', wantsTrainer: LS.get('gb.intent', '') === 'trainer' });
+    if (o.wantsTrainer) {
+      return `<header class="top"><div class="brand"><small>Welcome, trainer</small><b>Set up your profile</b></div></header>
+        <div class="glass card stack"><label class="fld">Your name (clients will see this)<input class="inp" data-in="oname" value="${esc(o.name)}" placeholder="e.g. Coach Ravi" maxlength="24" autocomplete="off"></label><div class="tiny muted">Your colour</div><div class="swatches">${COLORS.map((c) => `<button data-act="ocolor" data-c="${c}" class="${o.color === c ? 'on' : ''}" style="background:${c}" aria-label="Colour ${c}"></button>`).join('')}</div><div class="small muted">Signed in as ${esc(S.user && S.user.email)}</div></div>
+        <div class="sect"><button class="btn pri block" data-act="create">Request trainer access</button><button class="btn ghost block" data-act="onbMember">I'm not a trainer</button><button class="btn ghost block" data-act="signOut">Use a different Google account</button></div>`;
+    }
     let h = `<header class="top"><div class="brand"><small>Welcome</small><b>Set up your profile</b></div></header>`;
     h += `<div class="glass card stack"><label class="fld">Your name<input class="inp" data-in="oname" value="${esc(o.name)}" placeholder="e.g. Mahima" maxlength="24" autocomplete="off"></label><div class="tiny muted">Your colour</div><div class="swatches">${COLORS.map((c) => `<button data-act="ocolor" data-c="${c}" class="${o.color === c ? 'on' : ''}" style="background:${c}" aria-label="Colour ${c}"></button>`).join('')}</div><div class="small muted">Signed in as ${esc(S.user && S.user.email)}</div></div>`;
-    h += `<div class="sect"><h2>Training with a personal trainer?</h2><div class="glass card stack"><label class="fld">Trainer code (optional)<input class="inp" data-in="otcode" value="${esc(o.trainerCode)}" placeholder="6-letter code from your trainer" maxlength="6" autocomplete="off" autocapitalize="characters"></label><label class="fld">Family or friends group code (optional)<input class="inp" data-in="ocircle" value="${esc(o.circle)}" placeholder="to compete with them" maxlength="6" autocomplete="off" autocapitalize="characters"></label><label class="row small"><input type="checkbox" data-in="owt" ${o.wantsTrainer ? 'checked' : ''}> I'm a trainer (the admin will approve)</label></div></div>`;
+    h += `<div class="sect"><h2>Training with a personal trainer?</h2><div class="glass card stack"><label class="fld">Trainer code (optional)<input class="inp" data-in="otcode" value="${esc(o.trainerCode)}" placeholder="6-letter code from your trainer" maxlength="6" autocomplete="off" autocapitalize="characters"></label><label class="fld">Family or friends group code (optional)<input class="inp" data-in="ocircle" value="${esc(o.circle)}" placeholder="to compete with them" maxlength="6" autocomplete="off" autocapitalize="characters"></label></div></div>`;
     h += `<div class="sect"><div class="sect-h"><h2>Your week</h2></div><p class="small muted">${o.trainerCode ? 'Your trainer can change this later.' : 'The recommended plan. Tap any day to change it.'}</p><div class="glass card">${schedList(o, 'o')}</div></div>`;
     h += `<div class="sect"><button class="btn pri block" data-act="create">Start training</button><button class="btn ghost block" data-act="signOut">Use a different Google account</button><p class="small faint">Check with your doctor before starting a new training plan.</p></div>`;
     return h;
@@ -866,18 +899,52 @@
     const x = st.byLog[lid(pid, t)]; if (x && x.done) { planned++; done++; }
     return { planned, done };
   }
+  function trainerRows(D, rows) {
+    const q = (S.trQ || '').toLowerCase();
+    const list = rows.filter((r) => !q || (P(r.c).name || '').toLowerCase().includes(q));
+    if (!list.length) return '<p class="small muted" style="padding:12px">No clients match.</p>';
+    return `<div class="atable"><div class="atr ath"><span>Client</span><span>Last active</span><span>7-day</span><span>Attend.</span></div>${list.map(({ c, a }) => {
+      const p = P(c), i = D.info[c], pc = a.planned ? Math.round((a.done / a.planned) * 100) : null;
+      return `<button class="atr" data-act="coach" data-u="${c}"><span class="row" style="gap:8px;min-width:0">${avatar(p)}<span style="min-width:0"><b>${esc(p.name)}</b><span class="small muted ellip">${esc(planTitle(planFor(c, D.t)))} today</span></span></span><span class="small ${i.last === D.t ? 'good' : !i.last || daysBetween(i.last, D.t) > 6 ? 'warn' : ''}">${relDay(i.last)}</span><span class="num">${i.s7}<small> sess</small></span><span class="num ${pc == null ? '' : pc >= 75 ? 'good' : pc < 50 ? 'warn' : ''}">${pc == null ? '—' : pc + '%'}</span></button>`;
+    }).join('')}</div>`;
+  }
   function viewClients() {
     const u = me(), ids = Object.keys(S.src.clients).filter((x) => S.users[x]);
-    let h = `<div class="glass card stack"><div class="sect-h"><h2>Invite clients</h2></div>${u.inviteCode ? `<div class="row between"><div><div class="tiny muted">Your trainer code</div><div class="code big">${esc(u.inviteCode)}</div></div><button class="btn sm" data-act="copyCode" data-c="${esc(u.inviteCode)}">Copy</button></div><p class="small muted">Clients sign in with Google and enter this code (Me → My trainer). They then appear below.</p>` : `<p class="small muted">Create a code that your clients enter to link to you.</p><button class="btn pri" data-act="makeInvite">Create my trainer code</button>`}</div>`;
-    if (!ids.length) return h + `<div class="glass card empty" style="margin-top:12px">No clients yet.</div>`;
-    const rows = ids.map((c) => ({ c, f: flags(c), a: attendance(c, 14) })).sort((a, b) => b.f.filter((x) => x[0] === 'bad').length - a.f.filter((x) => x[0] === 'bad').length || P(a.c).name.localeCompare(P(b.c).name));
-    const needs = rows.filter((r) => r.f.some((x) => x[0] !== 'info')).length;
-    h += `<div class="sect"><div class="sect-h"><h2>Clients · ${ids.length}</h2><span class="small ${needs ? 'warn' : 'muted'}">${needs ? needs + ' need attention' : 'All on track'}</span></div><div class="stack">`;
-    rows.forEach(({ c, f, a }) => {
-      const p = P(c), t = todayISO(), plan = planFor(c, t), i = stats().byLog[lid(c, t)];
-      h += `<button class="glass client" data-act="coach" data-u="${c}"><div class="row between"><div class="row">${avatar(p, true)}<div><b>${esc(p.name)}</b><div class="small muted">Today: ${esc(planTitle(plan))}${i && i.sets ? ` · ${i.sets}/${plannedOf(plan)} sets` : ''}</div></div></div><div class="pts" style="font-size:22px">${a.planned ? Math.round((a.done / a.planned) * 100) + '%' : '—'}<small>2-wk attend.</small></div></div>${f.length ? `<div class="chips" style="margin-top:8px">${f.map(([k, txt]) => `<span class="flag ${k}">${esc(txt)}</span>`).join('')}</div>` : ''}</button>`;
+    const invite = u.inviteCode
+      ? `<div class="glass card stack"><div class="row between"><div><div class="tiny muted">Your trainer code</div><div class="code big">${esc(u.inviteCode)}</div></div><button class="btn sm" data-act="copyCode" data-c="${esc(u.inviteCode)}">Copy</button></div><p class="small muted">Send clients your link. They sign in with Gmail and are linked to you automatically.</p><div class="row" style="gap:8px"><button class="btn sm teal" data-act="share" data-k="client">Invite on WhatsApp</button><button class="btn sm ghost" data-act="copyLink" data-k="client">Copy link</button></div></div>`
+      : `<div class="glass card stack"><h2>Invite your clients</h2><p class="small muted">Create your trainer code. Clients who sign up with it appear on this dashboard.</p><button class="btn pri" data-act="makeInvite">Create my trainer code</button></div>`;
+    if (!ids.length) return `<div class="glass card empty" style="margin-bottom:12px">No clients yet. Invite them below and they will show up here with their workouts, attendance and alerts.</div>` + invite;
+    const D = activityData(ids.map((c) => [c, S.users[c]])), t = D.t, info = D.info;
+    const rows = ids.map((c) => ({ c, f: flags(c), a: attendance(c, 14) })).sort((a, b) => (P(a.c).name || '').localeCompare(P(b.c).name || ''));
+    const newC = ids.filter((c) => (P(c).created || '') >= addDays(t, -6)).length;
+    const todayPl = ids.filter((c) => isTraining(planFor(c, t)));
+    const doneToday = todayPl.filter((c) => { const i = stats().byLog[lid(c, t)]; return i && i.done; }).length;
+    const sess7 = ids.reduce((x, c) => x + info[c].s7, 0);
+    let pl = 0, dn = 0; rows.forEach((r) => { pl += r.a.planned; dn += r.a.done; });
+    const alerts = rows.filter((r) => r.f.some((x) => x[0] !== 'info'));
+    const planGaps = rows.filter((r) => r.f.some((x) => x[0] === 'info' || /^Plan ends/.test(x[1]))).length;
+    const kpi = (v, l, sub) => `<div class="kpi glass"><b>${v}</b><span>${l}</span>${sub ? `<small>${sub}</small>` : ''}</div>`;
+    let h = `<div class="kpis">${kpi(ids.length, 'Clients', newC ? `+${newC} this week` : 'linked to you')}${kpi(`${doneToday}/${todayPl.length}`, 'Done today', 'of those training today')}${kpi(sess7, 'Sessions', 'last 7 days')}${kpi(pl ? Math.round((dn / pl) * 100) + '%' : '—', 'Attendance', 'last 14 days')}${kpi(alerts.length, 'Need attention', alerts.length ? 'see below' : 'all on track')}${kpi(planGaps, 'Plans to publish', 'none or ending in 7 days')}</div>`;
+    // today at the gym
+    h += `<div class="sect"><div class="sect-h"><h2>Today</h2><span class="small muted">${fmtDay(t, { weekday: 'long', day: 'numeric', month: 'short' })}</span></div><div class="glass card stack">`;
+    if (!todayPl.length) h += '<p class="small muted">None of your clients has a workout planned today.</p>';
+    todayPl.sort((a, b) => (P(a).name || '').localeCompare(P(b).name || '')).forEach((c) => {
+      const p = P(c), plan = planFor(c, t), i = stats().byLog[lid(c, t)], n = plannedOf(plan);
+      const st = i && i.done ? ['good', 'Done'] : i && i.sets ? ['warn', `${i.sets}/${n} sets`] : ['', 'Not started'];
+      h += `<button class="row between" style="width:100%;text-align:left" data-act="coach" data-u="${c}"><div class="row">${avatar(p)}<div><b>${esc(p.name)}</b><div class="small muted">${esc(planTitle(plan))}</div></div></div><span class="flag ${st[0] || 'info'}">${st[1]}</span></button>`;
     });
     h += `</div></div>`;
+    h += `<div class="sect"><div class="glass card stack"><div class="sect-h"><h3>Client workouts per day</h3><span class="small muted">last 14 days</span></div>${barChart(D.days, D.sess, '#1FA08E', 'workouts')}${det('trTable', 'Numbers behind the chart', `<div class="hist">${D.days.slice().reverse().map((d, i) => `<div><span>${fmtDay(d)}</span><span class="small">${D.sess[13 - i]} workouts · ${D.dau[13 - i]} clients active</span></div>`).join('')}</div>`, false)}</div></div>`;
+    // needs attention
+    h += `<div class="sect"><div class="sect-h"><h2>Needs attention</h2><span class="small ${alerts.length ? 'warn' : 'muted'}">${alerts.length ? alerts.length + (alerts.length === 1 ? ' client' : ' clients') : 'All clear'}</span></div><div class="glass card stack">`;
+    if (!alerts.length) h += '<p class="small muted">No pain reports, missed sessions, stalled lifts or plans running out.</p>';
+    alerts.sort((a, b) => b.f.filter((x) => x[0] === 'bad').length - a.f.filter((x) => x[0] === 'bad').length).forEach(({ c, f }) => {
+      const p = P(c), pain = info[c].pain[0];
+      h += `<button class="row between" style="width:100%;text-align:left" data-act="coach" data-u="${c}"><div class="row" style="align-items:flex-start">${avatar(p)}<div style="min-width:0"><b>${esc(p.name)}</b><div class="chips" style="margin-top:4px">${f.filter((x) => x[0] !== 'info').map(([k, txt]) => `<span class="flag ${k}">${esc(txt)}</span>`).join('')}</div>${pain ? `<div class="small muted" style="margin-top:4px">${esc(pain.ex ? pain.ex.n : '')} · ${fmtDay(pain.date)}${pain.note ? ' · “' + esc(pain.note) + '”' : ''}</div>` : ''}</div></div>${ICON.next}</button>`;
+    });
+    h += `</div></div>`;
+    h += `<div class="sect"><div class="sect-h"><h2>All clients</h2><span class="small muted">tap to coach</span></div>${ids.length > 6 ? `<input class="inp" data-in="trQ" placeholder="Search clients" value="${esc(S.trQ || '')}" autocomplete="off">` : ''}<div class="glass card" id="trClients" style="padding:4px 6px">${trainerRows(D, rows)}</div></div>`;
+    h += `<div class="sect">${invite}</div>`;
     return h;
   }
 
@@ -947,9 +1014,9 @@
     });
     return o + '</svg>';
   }
-  function adminData() {
+  function adminData() { return activityData(Object.keys(S.src.all).map((u) => [u, S.users[u] || S.src.all[u]]).filter((x) => x[1])); }
+  function activityData(all) {
     const t = todayISO(), st = stats();
-    const all = Object.keys(S.src.all).map((u) => [u, S.users[u] || S.src.all[u]]).filter((x) => x[1]);
     const logsBy = {}; Object.values(S.logs).forEach((l) => { (logsBy[l.pid] = logsBy[l.pid] || []).push(l); });
     const active = (u, d) => { const i = st.byLog[lid(u, d)]; return !!(i && (i.sets > 0 || i.cardioDone)); };
     const info = {};
@@ -990,7 +1057,8 @@
     let h = `<button class="btn sm ghost" data-act="adminBack" style="margin-bottom:8px">${ICON.back} All users</button>
       <div class="glass card stack"><div class="row">${avatar(d, true)}<div style="min-width:0"><h2>${esc(d.name)}</h2><div class="small muted">${esc(d.email || '')}</div></div></div>
       <div class="mini"><div><b>${relDay(i.last)}</b><span>Last active</span></div><div><b>${i.s7}</b><span>Sessions 7d</span></div><div><b>${i.total}</b><span>All sessions</span></div><div><b>${i.streak}</b><span>Streak</span></div></div>
-      <div class="small muted">${d.role === 'trainer' ? 'Trainer' : d.trainerId ? 'Trainee' : 'Member'}${tr ? ' · trainer: ' + esc(tr.name) : ''}${d.circle ? ' · group ' + esc(d.circle) : ''} · joined ${esc(d.created || '—')}</div></div>`;
+      <div class="small muted">${d.role === 'trainer' ? 'Trainer' : d.trainerId ? 'Trainee' : 'Member'}${tr ? ' · trainer: ' + esc(tr.name) : ''}${d.circle ? ' · group ' + esc(d.circle) : ''} · joined ${esc(d.created || '—')}</div>
+      <div class="row" style="gap:8px;flex-wrap:wrap">${d.role === 'trainer' ? `<button class="btn sm ghost" data-act="setRole" data-u="${u}" data-r="member">Remove trainer access</button>` : `<button class="btn sm teal" data-act="setRole" data-u="${u}" data-r="trainer">Make trainer</button>${d.wantsTrainer ? `<button class="btn sm ghost" data-act="declineTrainer" data-u="${u}">Decline request</button>` : ''}`}</div></div>`;
     h += `<div class="sect"><h2>Recent sessions</h2><div class="glass card">${recent.length ? `<div class="hist">${recent.map((l) => { const p = l.plan || planFor(u, l.date); const bi = stats().byLog[lid(u, l.date)]; return `<div><span>${fmtDay(l.date)}<br><span class="small muted">${esc(planTitle(p))}</span></span><span class="small">${bi.sets}/${bi.planned} sets · ${bi.pts} pts</span></div>`; }).join('')}</div>` : '<p class="small muted">No sessions logged yet.</p>'}</div></div>`;
     h += `<div class="sect">${viewReport(u)}</div>`;
     return h;
@@ -1016,16 +1084,16 @@
     const attention = reqs.length + pains.length + idle.length;
     h += `<div class="sect"><div class="sect-h"><h2>Needs attention</h2><span class="small ${attention ? 'warn' : 'muted'}">${attention ? attention + (attention === 1 ? ' item' : ' items') : 'All clear'}</span></div><div class="glass card stack">`;
     if (!attention) h += '<p class="small muted">No trainer requests, pain reports or inactive users.</p>';
-    reqs.forEach(([u, d]) => { h += `<div class="row between"><div class="row">${avatar(d)}<div><b>${esc(d.name)}</b><div class="small muted">Wants trainer access · ${esc(d.email || '')}</div></div></div><button class="btn sm teal" data-act="setRole" data-u="${u}" data-r="trainer">Approve</button></div>`; });
+    reqs.forEach(([u, d]) => { h += `<div class="row between"><div class="row">${avatar(d)}<div><b>${esc(d.name)}</b><div class="small muted">Wants trainer access · ${esc(d.email || '')}</div></div></div><div class="row" style="gap:6px"><button class="btn sm ghost" data-act="declineTrainer" data-u="${u}">Decline</button><button class="btn sm teal" data-act="setRole" data-u="${u}" data-r="trainer">Approve</button></div></div>`; });
     pains.slice(0, 8).forEach(({ u, d, p }) => { const tr = d.trainerId && S.users[d.trainerId]; h += `<button class="row between" style="width:100%;text-align:left" data-act="adminUser" data-u="${u}"><div class="row">${avatar(d)}<div><b>${esc(d.name)}</b> <span class="flag bad">Pain</span><div class="small muted">${esc(p.ex ? p.ex.n : '')} · ${fmtDay(p.date)}${tr ? ' · trainer ' + esc(tr.name) : ''}${p.note ? ' · “' + esc(p.note) + '”' : ''}</div></div></div></button>`; });
     idle.slice(0, 8).forEach(([u, d]) => { h += `<button class="row between" style="width:100%;text-align:left" data-act="adminUser" data-u="${u}"><div class="row">${avatar(d)}<div><b>${esc(d.name)}</b> <span class="flag warn">Inactive</span><div class="small muted">Last active ${relDay(info[u].last)} · joined ${esc(d.created || '')}</div></div></div></button>`; });
     h += `</div></div>`;
-    h += `<div class="sect"><h2>Trainers</h2><div class="glass card">${trainers.length ? `<div class="atable"><div class="atr ath t4"><span>Trainer</span><span>Clients</span><span>Active 7d</span><span>Attend. 14d</span></div>${trainers.map(([u, d]) => {
+    h += `<div class="sect"><h2>Trainers</h2><div class="glass card stack" style="margin-bottom:10px"><div><b>Trainer sign-up link</b><div class="small muted">Send this to trainers. They sign in with Gmail, and you approve them under Needs attention.</div></div><div class="row" style="gap:8px"><button class="btn sm teal" data-act="share" data-k="trainer">Send on WhatsApp</button><button class="btn sm ghost" data-act="copyLink" data-k="trainer">Copy link</button></div></div><div class="glass card">${trainers.length ? `<div class="atable"><div class="atr ath t4"><span>Trainer</span><span>Clients</span><span>Active 7d</span><span>Attend. 14d</span></div>${trainers.map(([u, d]) => {
       const cl = all.filter(([, x]) => x.trainerId === u).map(([c]) => c);
       const actC = cl.filter((c) => info[c].last && info[c].last >= addDays(t, -6)).length;
       let pl = 0, dn = 0; cl.forEach((c) => { const a = attendance(c, 14); pl += a.planned; dn += a.done; });
       return `<div class="atr t4"><span class="row" style="gap:8px">${avatar(d)}<span><b>${esc(d.name)}</b><span class="small muted ellip">code ${esc(d.inviteCode || '—')}</span></span></span><span class="num">${cl.length}</span><span class="num">${actC}</span><span class="num">${pl ? Math.round((dn / pl) * 100) + '%' : '—'}</span></div>`;
-    }).join('')}</div>` : '<p class="small muted">No trainers yet. Approve requests above, or open a user and make them a trainer.</p>'}</div></div>`;
+    }).join('')}</div>` : '<p class="small muted">No trainers yet. Send the sign-up link above, or open a user and make them a trainer.</p>'}</div></div>`;
     const top = Object.entries(D.exCount).sort((a, b) => b[1] - a[1]).slice(0, 8);
     if (top.length) {
       const mx = top[0][1];
@@ -1035,18 +1103,6 @@
     h += `<p class="small faint" style="margin:14px 2px">Live: updates as people log. Only admins see this tab.</p>`;
     return h;
   }
-  function viewAdmin() {
-    const all = Object.keys(S.src.all).map((u) => [u, S.users[u] || S.src.all[u]]).filter((x) => x[1]);
-    const reqs = all.filter(([, d]) => d.wantsTrainer && d.role !== 'trainer');
-    const trainers = all.filter(([, d]) => d.role === 'trainer');
-    const clientsOf = (u) => all.filter(([, d]) => d.trainerId === u).length;
-    return `<div class="sect"><h2>Admin</h2><div class="glass card stack"><div class="mini"><div><b>${all.length}</b><span>Users</span></div><div><b>${trainers.length}</b><span>Trainers</span></div><div><b>${all.filter(([, d]) => d.trainerId).length}</b><span>Trainees</span></div><div><b>${reqs.length}</b><span>Requests</span></div></div>
-      ${reqs.length ? `<div class="tiny muted">Trainer requests</div>${reqs.map(([u, d]) => `<div class="row between"><div class="row">${avatar(d)}<div><b>${esc(d.name)}</b><div class="small muted">${esc(d.email || '')}</div></div></div><button class="btn sm teal" data-act="setRole" data-u="${u}" data-r="trainer">Approve</button></div>`).join('')}` : ''}
-      <div class="tiny muted">Trainers</div>${trainers.length ? trainers.map(([u, d]) => `<div class="row between"><div class="row">${avatar(d)}<div><b>${esc(d.name)}</b><div class="small muted">${clientsOf(u)} clients · code ${esc(d.inviteCode || '—')}</div></div></div>${u !== S.uid ? `<button class="btn sm ghost" data-act="setRole" data-u="${u}" data-r="member">Remove</button>` : `<span class="small muted">you</span>`}</div>`).join('') : '<p class="small muted">None yet.</p>'}
-      ${!isTrainer() ? `<button class="btn sm" data-act="setRole" data-u="${S.uid}" data-r="trainer" style="align-self:flex-start">Make me a trainer too</button>` : ''}
-      <div class="tiny muted">Everyone</div>${all.map(([u, d]) => `<div class="row between small"><span>${esc(d.name)} <span class="muted">${esc(d.email || '')}</span></span><span class="muted">${d.role === 'trainer' ? 'trainer' : d.trainerId ? 'trainee' : 'member'}</span></div>`).join('')}</div></div>`;
-  }
-
   // ---------- ACTIONS ----------
   function schedAct(obj, act, d) {
     const day = d.day;
@@ -1086,7 +1142,14 @@
   const inputVal = (k) => { const el = $(`[data-in="${k}"]`); return el ? el.value.trim().toUpperCase() : ''; };
   const ACT = {
     signIn() { Store().signIn().catch((e) => { console.warn(e); toast('Sign-in did not finish. Please try again.'); }); },
-    signOut() { Store().signOut(); S.onb = null; },
+    signOut() { LS.set('gb.intent', ''); Store().signOut(); S.onb = null; },
+    signInTrainer() { LS.set('gb.intent', 'trainer'); LS.set('gb.link', { t: 1, at: Date.now() }); if (S.onb) S.onb.wantsTrainer = true; ACT.signIn(); },
+    memberLanding() { LS.set('gb.link', null); LS.set('gb.intent', ''); if (QS.has('trainer')) history.replaceState(null, '', APP_URL); render(); },
+    onbMember() { LS.set('gb.intent', ''); S.onb.wantsTrainer = false; render(); },
+    notTrainer() { saveUser(S.uid, { wantsTrainer: false, signup: 'member' }); render(); },
+    declineTrainer(d) { const u = d.u, f = { wantsTrainer: false, signup: 'member' }; [S.users[u], S.src.all[u]].forEach((x) => x && Object.assign(x, f)); queueWrite(`users/${u}`, Object.assign({ updatedAt: Date.now() }, f), true); toast('Request declined. They stay a member.'); render(); },
+    share(d) { const txt = d.k === 'trainer' ? `Hi! I've set up Gym Buddy for our gym. As a trainer you can plan your clients' workouts and track them. Sign in here with your Gmail: ${APP_URL}?trainer` : `Join me on Gym Buddy for your workout plans. Open ${APP_URL}?code=${me().inviteCode}, sign in with your Gmail and you'll be linked to me as your trainer (code ${me().inviteCode}).`; window.open('https://wa.me/?text=' + encodeURIComponent(txt), '_blank'); },
+    copyLink(d) { const v = d.k === 'trainer' ? APP_URL + '?trainer' : `${APP_URL}?code=${me().inviteCode}`; try { navigator.clipboard.writeText(v).then(() => toast('Link copied'), () => toast(v)); } catch (e) { toast(v); } },
     tab(d) { if (d.tab === 'admin' && S.tab !== 'admin') S.adminUser = null; S.tab = d.tab; if (!coaching()) LS.set('gb.tab', d.tab); S.editDay = null; render(); window.scrollTo(0, 0); },
     day(d) { S.date = addDays(S.date, +d.d); render(); },
     goToday() { S.date = todayISO(); render(); },
@@ -1190,14 +1253,16 @@
     async create() {
       const o = S.onb; const name = (o.name || '').trim();
       if (!name) { toast('Please type your name first.'); return; }
-      const doc = { name, email: S.user.email || '', color: o.color, role: 'member', wantsTrainer: !!o.wantsTrainer, trainerId: '', trainerCode: '', circle: '', schedule: o.schedule, sets: o.sets || {}, counts: o.counts || {}, unit: 'kg', created: todayISO(), updatedAt: Date.now() };
+      const doc = { name, email: S.user.email || '', color: o.color, role: 'member', wantsTrainer: !!o.wantsTrainer, signup: o.wantsTrainer ? 'trainer' : 'member', trainerId: '', trainerCode: '', circle: '', schedule: o.schedule, sets: o.sets || {}, counts: o.counts || {}, unit: 'kg', created: todayISO(), updatedAt: Date.now() };
       const tc = (o.trainerCode || '').trim().toUpperCase(), cc = (o.circle || '').trim().toUpperCase();
-      if (tc) { const c = await Store().get(`codes/${tc}`).catch(() => null); if (!c) { toast('Trainer code not found. Check it or leave it empty.'); return; } doc.trainerId = c.trainerId; doc.trainerCode = tc; }
-      if (cc) { const c = await Store().get(`circles/${cc}`).catch(() => null); if (!c) { toast('Group code not found. Check it or leave it empty.'); return; } doc.circle = cc; }
+      if (tc && !o.wantsTrainer) { const c = await Store().get(`codes/${tc}`).catch(() => null); if (!c) { toast('Trainer code not found. Check it or leave it empty.'); return; } doc.trainerId = c.trainerId; doc.trainerCode = tc; }
+      if (cc && !o.wantsTrainer) { const c = await Store().get(`circles/${cc}`).catch(() => null); if (!c) { toast('Group code not found. Check it or leave it empty.'); return; } doc.circle = cc; }
+      if (o.wantsTrainer) { doc.trainerCode = ''; doc.trainerId = ''; doc.circle = ''; }
+      LS.set('gb.intent', ''); LS.set('gb.code', ''); LS.set('gb.link', null);
       S.src.me = { [S.uid]: doc }; recompose();
       queueWrite(`users/${S.uid}`, doc, false);
       S.onb = null; S.phase = 'app'; S.act = S.uid; S.tab = 'today'; S.date = todayISO(); S.editDay = null;
-      onMe(doc); render(); window.scrollTo(0, 0); toast(`Welcome, ${name}!`);
+      onMe(doc); render(); window.scrollTo(0, 0); toast(o.wantsTrainer ? 'Request sent to the admin.' : `Welcome, ${name}!`);
     },
   };
   // schedule editors: me (self), o (onboarding), cl (trainer editing a client)
@@ -1236,6 +1301,7 @@
     if (k === 'ocircle') { S.onb.circle = el.value.toUpperCase(); return; }
     if (k === 'owt') { S.onb.wantsTrainer = el.checked; return; }
     if (k === 'joinTrainer' || k === 'joinCircle') return;
+    if (k === 'trQ') { S.trQ = el.value; const box = $('#trClients'); if (box) { const ids = Object.keys(S.src.clients).filter((x) => S.users[x]); box.innerHTML = trainerRows(activityData(ids.map((c) => [c, S.users[c]])), ids.map((c) => ({ c, a: attendance(c, 14) })).sort((x, y) => (P(x.c).name || '').localeCompare(P(y.c).name || ''))); } return; }
     if (k === 'adminQ') { S.adminQ = el.value; const box = $('#adminUsers'); if (box) box.innerHTML = adminUserRows(adminData()); return; }
     if (k === 'pname') { const v = el.value.slice(0, 24) || 'Me'; me().name = v; clearTimeout(noteT.p); noteT.p = setTimeout(() => saveUser(S.uid, { name: v }), 600); return; }
     if (k === 'clNote') { const v = el.value.slice(0, 300); P(S.act).planNote = v; clearTimeout(noteT.c); noteT.c = setTimeout(() => saveUser(S.act, { planNote: v }), 700); return; }
